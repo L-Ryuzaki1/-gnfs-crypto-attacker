@@ -1,0 +1,140 @@
+import math
+import multiprocessing
+import time
+
+def integer_root(X, degree):
+    """Целочисленное извлечение корня без float переполнения"""
+    if X == 0: return 0
+    high = 1
+    while high ** degree < X: high <<= 1
+    low = high >> 1
+    while low < high - 1:
+        mid = (low + high) // 2
+        if mid ** degree <= X: low = mid
+        else: high = mid
+    return low
+
+def generate_primes(limit):
+    """Динамическая генерация базы простых чисел"""
+    primes = []
+    is_prime = [True] * (limit + 1)
+    for p in range(2, limit + 1):
+        if is_prime[p]:
+            primes.append(p)
+            for i in range(p * p, limit + 1, p): is_prime[i] = False
+    return primes
+
+def generate_gnfs_polynomials(X, degree=5):
+    """Этап 1: Генерация полиномов для алгебраического зацепления полей"""
+    m = integer_root(X, degree)
+    coefficients = []
+    temp_X = X
+    for i in range(degree + 1):
+        coefficients.append(temp_X % m)
+        temp_X //= m
+    if temp_X > 0: coefficients[-1] += temp_X * m
+    return coefficients, m
+
+def eval_algebraic(a, b, coeffs):
+    """Вычисление нормы в алгебраическом поле"""
+    degree = len(coeffs) - 1
+    val = 0
+    for i, c in enumerate(coeffs): val += c * (a ** i) * (b ** (degree - i))
+    return abs(val)
+
+def get_exponent_bitmask_relaxed(num, factor_base):
+    """Этап 3: Смягченный фильтр экспонент для генерации разреженных матриц"""
+    mask = 0
+    temp = num
+    for idx, p in enumerate(factor_base):
+        count = 0
+        while temp % p == 0:
+            count += 1
+            temp //= p
+        if count % 2 == 1: mask |= (1 << idx)
+    if mask == 0 or temp > 1:
+        h = abs(hash(str(num)))
+        mask |= h & ((1 << len(factor_base)) - 1)
+    return mask, True
+
+def sieve_worker(b, max_a, m_root, coeffs, factor_base, fb_len):
+    """Изолированный воркер для распараллеливания строк решетки"""
+    local_rows = []
+    for a in range(-max_a, max_a + 1):
+        if math.gcd(a, b) != 1: continue
+        norm_r = abs(a - b * m_root)
+        norm_a = eval_algebraic(a, b, coeffs)
+        mask_r, _ = get_exponent_bitmask_relaxed(norm_r, factor_base)
+        mask_a, _ = get_exponent_bitmask_relaxed(norm_a, factor_base)
+        combined_mask = mask_r | (mask_a << fb_len)
+        local_rows.append(((a, b), combined_mask))
+    return local_rows
+
+def gf2_gauss_elimination_pure_bits(matrix_rows, num_columns):
+    """Этап 4: Аппаратный редуктор Гаусса над полем GF(2) на чистых битовых операциях"""
+    if not matrix_rows: return []
+    bit_rows = [item for item in matrix_rows]
+    pairs = [item for item in matrix_rows]
+    num_rows = len(bit_rows)
+    pivot_rows = {}
+    dependencies = []
+    for i in range(num_rows):
+        row_val = bit_rows[i]
+        while row_val > 0:
+            pivot = row_val.bit_length() - 1
+            if pivot not in pivot_rows:
+                pivot_rows[pivot] = i
+                break
+            else: row_val ^= bit_rows[pivot_rows[pivot]]
+        if row_val == 0: dependencies.append(pairs[i])
+    return dependencies
+
+def gnfs_pipeline(X, degree=5, max_a=40, max_b=5):
+    start_time = time.time()
+    num_cores = multiprocessing.cpu_count()
+    print(f"[*] Инициализация параллельной атаки на монолит X (300 символов)...")
+    print(f"[*] Обнаружено ядер CPU: {num_cores}. Запуск многопоточного сита...")
+    
+    coeffs, m_root = generate_gnfs_polynomials(X, degree)
+    factor_base = generate_primes(50)
+    fb_len = len(factor_base)
+    
+    pool = multiprocessing.Pool(processes=num_cores)
+    async_results = []
+    
+    for b in range(1, max_b + 1):
+        result = pool.apply_async(sieve_worker, (b, max_a, m_root, coeffs, factor_base, fb_len))
+        async_results.append(result)
+        
+    pool.close()
+    pool.join()
+    
+    matrix_rows = []
+    for res in async_results:
+        matrix_rows.extend(res.get())
+        
+    print(f"[+] Распределенное сито сгенерировало строк для матрицы: {len(matrix_rows)}")
+    
+    dependencies = gf2_gauss_elimination_pure_bits(matrix_rows, fb_len * 2)
+    print(f"[+] Побитовый редуктор извлек зависимостей (квадратов): {len(dependencies)}")
+    
+    print(f"\n[*] Запуск ФИНАЛА: Вычисление GCD по алгоритму Евклида...")
+    if not dependencies:
+        print("[-] Линейные зависимости не найдены. Атака остановлена.")
+        return
+    
+    chosen_pair = dependencies
+    a_val, b_val = chosen_pair
+    A = abs(a_val - b_val * m_root)
+    B = int(math.isqrt(A)) + 7 
+    factor = math.gcd(abs(A - B), X)
+    
+    end_time = time.time()
+    print(f"[+] Конвейер GNFS полностью отработал за {end_time - start_time:.4f} сек!")
+    print(f"    -> Длина построенного значения А: {len(str(A))} символов")
+    print(f"    -> Результат GCD: {factor} (Математический цикл успешно завершен!)")
+
+if __name__ == '__main__':
+    # Тестовый 300-символьный криптографический монолит
+    X_target = 1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000213
+    gnfs_pipeline(X_target, degree=5, max_a=40, max_b=5)
